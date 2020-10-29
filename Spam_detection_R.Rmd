@@ -1,0 +1,232 @@
+---
+title: "Spam_R"
+author: "Yuyao Zhang"
+date: "10/28/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+---
+title: "Final project"
+author: "Yuyao Zhang"
+date: "12/3/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r,include=FALSE}
+library(ggplot2)
+library(corrplot)
+library(gridExtra)
+library(gam)
+library(boot)
+library(xtable)
+library(rpart)
+library(nnet)
+library(randomForest)
+library(caret)
+library(rattle)
+library(RColorBrewer) 
+library(glmnet)
+library(ensr)
+library(class)
+library(ElemStatLearn)
+library(factoextra)
+library(Rtsne)
+library(leaps)
+```
+
+```{r,include=FALSE}
+# load dataset
+spambase <- read.csv(file = '/cloud/project/spambase.csv')
+class(spambase)
+```
+
+```{r,fig.asp=4,echo=FALSE}
+# find the correlation between different variables
+datamat <- data.matrix(spambase)
+corrmat <- cor(datamat)
+corrplot(corrmat, title = "Correlation Plot", method = "square", outline = T, addgrid.col = "darkgray", order="hclust", mar = c(4,0,4,0), addrect = 4, rect.col = "black", rect.lwd = 5, cl.pos = "b", tl.col = "indianred4", tl.cex = 1, cl.cex = 1)
+
+correlations <- NULL
+for (i in 1:nrow(corrmat)){
+  correlations <- which((corrmat[i,] > 0.80) & (corrmat[i,] != 1))
+  
+  if(length(correlations) > 0){
+    print(colnames(datamat)[i])
+    print(correlations)
+  }
+}
+
+cor(spambase$word_freq_415,spambase$word_freq_857)
+cor(spambase$word_freq_direct,spambase$word_freq_415)
+cor(spambase$word_freq_direct,spambase$word_freq_857)
+data1 <- spambase[,-c(32)]
+```
+
+```{r,echo=FALSE}
+# Principle Component Analysis
+par(mfrow=c(2,2))
+data2 <- data1[,-57]
+pc <- princomp(data2, cor = TRUE, scores = T)
+
+# plot
+fviz_contrib(pc, choice = "var", axes = 1, top = 10) # find contributions of each variable to PC1
+fviz_contrib(pc, choice = "var", axes = 2, top = 10) # find contributions of each variable to PC2
+fviz_pca_ind(pc,
+             geom.ind = "point", # show points only (nbut not "text")
+             col.ind = as.factor(data1$spam), # color by groups
+             palette = c("#00AFBB", "#E7B800"),
+             addEllipses = TRUE, # Concentration ellipses
+             legend.title = "spam")
+```
+
+
+
+```{r,echo=FALSE}
+# split the dataset into a training set and a testing set
+set.seed(2)
+intrain <- createDataPartition(y = data1$spam, p = 0.7, list = FALSE)
+training <- data1[intrain,]
+testing <- data1[-intrain,]
+```
+
+```{r,echo=FALSE}
+# EDA - distribution of each variable
+par(mfrow = c(4, 14))
+for (i in 1:56) {
+  plot <- ggplot(data = training, mapping = aes(x = as.factor(training$spam), y = training[,i])) + geom_boxplot() + coord_flip()
+  print(plot)
+}
+```
+
+```{r,echo=FALSE}
+# EDA - four variables that are distinguishable
+p1 <- ggplot(data = training, mapping = aes(x = as.factor(training$spam), y = training[,7])) + geom_boxplot() + coord_flip() + labs(x = "spam", y = "word_freq_remove")
+p2 <- ggplot(data = training, mapping = aes(x = as.factor(training$spam), y = training[,21])) + geom_boxplot() + coord_flip() + labs(x = "spam", y = "word_freq_your")
+p3 <- ggplot(data = training, mapping = aes(x = as.factor(training$spam), y = training[,23])) + geom_boxplot() + coord_flip() + labs(x = "spam", y = "word_freq_000")
+p4 <- ggplot(data = training, mapping = aes(x = as.factor(training$spam), y = training[,56])) + geom_boxplot() + coord_flip() + labs(x = "spam", y = "capital_run_length_total")
+
+grid.arrange(p1, p2, p3, p4, nrow = 2)
+```
+
+```{r,echo=FALSE}
+BSS <- regsubsets(as.factor(spam)~.+ word_freq_415:word_freq_direct, training, nvmax = 4, really.big = T) # run best subset selection
+plot(BSS, scale="Cp") # subset selection find the one with smallest cp
+summary(BSS) # the index of four best variables: 7, 21, 23, 56
+```
+
+```{r,echo=FALSE}
+# check that shrinkage is indeed necessary
+outglm <- glm(spam~.+ word_freq_415:word_freq_direct, data = training)
+xtable(summary(outglm))
+xtable(confint(outglm))
+```
+
+```{r,echo=FALSE}
+# the training of Ridge
+set.seed(2)
+
+xtrain <- model.matrix(spam ~. + word_freq_415:word_freq_direct, training)[,-1]
+cv.out <- cv.glmnet(xtrain, training$spam, alpha = 0, family = "binomial", standardize = T) # k fold cv to find the optimal parameter
+#plot(cv.out)
+min(cv.out$cvm) # minimal test binomial deviance
+
+Ridge <- glmnet(xtrain, training$spam, alpha = 0, family = "binomial", lambda=cv.out$lambda.min) # fit data
+
+finalridge<- predict(Ridge, type = "coefficients", s = cvL.out$lambda.min) # estimated coefficients
+xtable(as.matrix(finalridge))
+```
+
+```{r,echo=FALSE}
+# the training of Lasso
+set.seed(2)
+
+cvL.out <- cv.glmnet(xtrain, training$spam, alpha = 1, family = "binomial", standardize = T) # k fold cv to find the optimal parameter
+#plot(cvL.out)
+min(cvL.out$cvm) # minimal test binomial deviance
+#cvL.out$lambda.min
+
+Lasso <- glmnet(xtrain, training$spam, alpha = 1, family = "binomial", lambda = cvL.out$lambda.min) # fit data
+
+finalasso<- predict(Lasso, type = "coefficients", s = cvL.out$lambda.min )
+xtable(as.matrix(finalasso))
+```
+
+```{r,echo=FALSE}
+# the training of Elastic Net
+set.seed(2)
+
+#enesr <- ensr(y = as.matrix(training$spam), x=trainx, family = "binomial", standardize = T) # finding the optimal parameter
+#esumm <- summary(enesr)
+#esumm[cvm == min(cvm)]# find the model with least test mse
+
+Elastic <- glmnet(xtrain, training$spam, family = "binomial", alpha = 0.5555556, lambda = 3.569695e-05) # fit data #cvm=0.4560033
+finalelas<- predict(Elastic, type = "coefficients", s = 3.569695e-05)
+xtable(as.matrix(finalelas))
+```
+
+```{r,echo=FALSE}
+# test Ridge, Lasso, and Elastic Net
+xtest <- model.matrix(spam ~. + word_freq_415:word_freq_direct, testing)[,-1]
+
+new.spamridge <- predict(Ridge, xtest, type="response") # make predictions with trained model
+pred1 <- ifelse(new.spamridge >= 0.5, 1, 0) # use a threshold to turn the results into binary values for classification
+cer1 <- 1 - (sum(pred1==testing$spam)/nrow(testing)) # calculate the cer
+
+new.spamlasso <- predict(Lasso, xtest, type="response") # make predictions with trained model
+pred2 <- ifelse(new.spamlasso >= 0.5, 1, 0) # use a threshold to turn the results into binary values for classification
+cer2 <- 1 - (sum(pred2==testing$spam)/nrow(testing)) # calculate the cer
+
+new.spamelastic <- predict(Elastic, xtest, type="response") # make predictions with trained model
+pred3 <- ifelse(new.spamelastic >= 0.5, 1, 0) # use a threshold to turn the results into binary values for classification
+cer3 <- 1 - (sum(pred3==testing$spam)/nrow(testing)) # calculate the cer
+
+cer1
+cer2
+cer3
+```
+
+```{r,echo=FALSE}
+# K Nearest Neighbour
+normalize <- function(x) { ((x - min(x)) / (max(x) - min(x))) } # data normalization
+ktrain <- as.data.frame(lapply(training, normalize)) # prepare data for the function
+ktest <- as.data.frame(lapply(testing, normalize))
+
+knn_pred <- knn(ktrain, ktest, ktrain$spam, k = 20) # make predictions with knn
+#table(knn_pred, ktest$spam)
+cer4 <- 1 - (sum(knn_pred==ktest$spam)/nrow(ktest)) # calculate the cer
+cer4
+```
+
+```{r,echo=FALSE}
+# Random Forest (classification)
+set.seed(2) 
+rf.hitters <- randomForest(as.factor(training$spam)~.+ word_freq_415:word_freq_direct, data = training, mtry = 7, importance = TRUE, ntree = 100) # build 100 trees
+summary(rf.hitters$err.rate) # show the oob error
+
+newhitter <- predict(rf.hitters, newdata = testing) # make predictions
+cer5 <- 1 - (sum(newhitter == testing$spam)/nrow(testing)) # calculate the cer
+cer5
+
+#summary(rf.hitters$err.rate)
+```
+
+```{r,fig.cap="Variable importance plot for forest\\label{VarImp2: spam classification2}",echo=FALSE}
+varImpPlot(rf.hitters,sort = TRUE  ,n.var = min(10,nrow(rf.hitters$importance)),type=NULL, class=NULL, scale=TRUE,  main=deparse(substitute(x))) # plot important variables
+```
+
+```{r}
+# partial plot of Random Forest
+par(mfrow=c(2,2))
+partialPlot( rf.hitters, training, x.var = "char_freq_..3", ylab = "log(spam)")
+partialPlot( rf.hitters, training, x.var = "capital_run_length_average", ylab = "log(spam)")
+partialPlot( rf.hitters, training, x.var = "word_freq_hp", ylab = "log(spam)")
+```
+
